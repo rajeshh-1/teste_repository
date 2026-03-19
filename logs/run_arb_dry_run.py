@@ -17,13 +17,15 @@ if str(_REPO_ROOT) not in sys.path:
 from live_direct_arb import run_live_mode
 
 try:
-    from scripts.arb_cli import validate_from_namespace as _validate_from_arb_cli
+    from scripts.crypto_cli import validate_from_namespace as _validate_from_arb_cli
 except Exception:
     _validate_from_arb_cli = None
     try:
-        _ARB_CLI_PATH = Path(__file__).resolve().parent.parent / "scripts" / "arb_cli.py"
+        _ARB_CLI_PATH = Path(__file__).resolve().parent.parent / "scripts" / "crypto_cli.py"
+        if not _ARB_CLI_PATH.exists():
+            _ARB_CLI_PATH = Path(__file__).resolve().parent.parent / "scripts" / "arb_cli.py"
         if _ARB_CLI_PATH.exists():
-            spec = importlib.util.spec_from_file_location("scripts.arb_cli", str(_ARB_CLI_PATH))
+            spec = importlib.util.spec_from_file_location("scripts.crypto_cli", str(_ARB_CLI_PATH))
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
@@ -1051,8 +1053,8 @@ def run_fault_injection(args, repo_root: Path, output_dir: Path, summary_lines: 
 
 def main():
     args = parse_args()
-    warnings.warn("DEPRECATED: use scripts/arb_cli.py", UserWarning, stacklevel=1)
-    print("DEPRECATED: use scripts/arb_cli.py", file=sys.stderr)
+    warnings.warn("DEPRECATED: use scripts/crypto_cli.py", UserWarning, stacklevel=1)
+    print("DEPRECATED: use scripts/crypto_cli.py", file=sys.stderr)
 
     cfg_errors: list[str] = []
     if _validate_from_arb_cli is not None:
@@ -1081,7 +1083,7 @@ def main():
     summary_lines.append(f"leg_risk_cost={args.leg_risk_cost}")
     summary_lines.append(f"payout_esperado={args.payout_esperado}")
     summary_lines.append("legacy_entrypoint_deprecated=true")
-    summary_lines.append("legacy_replacement=scripts/arb_cli.py")
+    summary_lines.append("legacy_replacement=scripts/crypto_cli.py")
     if _validate_from_arb_cli is None:
         summary_lines.append("arb_cli_validation=skipped_import_error")
     else:

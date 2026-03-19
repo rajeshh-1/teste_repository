@@ -10,11 +10,19 @@ Keep legacy commands working while the internal structure migrates to `bot/core`
 - `python watch_btc_15m_poly.py --interval 0.1`
 
 All of them still work, but may print warnings:
-- `DEPRECATED: use scripts/arb_cli.py`
+- `DEPRECATED: use scripts/crypto_cli.py`
 - `DEPRECATED: use bot.core.*`
 
 ## New initial entrypoint
 - `python scripts/arb_cli.py --execution-mode paper --min-edge-pct 5 --min-liquidity 1`
+
+## Domain entrypoints (Phase 4.1)
+- Crypto:
+  - new: `python scripts/crypto_cli.py --execution-mode paper --min-edge-pct 5 --min-liquidity 1`
+  - legacy wrapper: `python scripts/arb_cli.py --execution-mode paper --min-edge-pct 5 --min-liquidity 1`
+- Sports:
+  - new: `python scripts/sports_cli.py --execution-mode paper --market-scope moneyline`
+  - legacy flows stay available (watchers/legacy scripts) and will be migrated gradually.
 
 ## Module mapping
 - `logs/arb_engine/config.py` -> `bot/core/config.py`

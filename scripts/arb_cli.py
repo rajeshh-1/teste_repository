@@ -1,5 +1,5 @@
-import argparse
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -7,73 +7,24 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from bot.core.config import build_runtime_config, load_env_file, validate_startup
+from scripts.crypto_cli import parse_args as _parse_args
+from scripts.crypto_cli import validate_from_namespace as _validate_from_namespace
+from scripts.crypto_cli import main as _crypto_main
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified arbitrage CLI (phase 2 compatibility stub).")
-    parser.add_argument("--execution-mode", default="paper", choices=["paper", "live"])
-    parser.add_argument("--min-edge-pct", type=float, default=5.0)
-    parser.add_argument("--min-liquidity", type=float, default=1.0)
-
-    # Optional passthroughs for startup validation compatibility.
-    parser.add_argument("--enable-live-prod", action="store_true")
-    parser.add_argument("--live-confirmation", default="")
-    parser.add_argument("--payout-esperado", type=float, default=1.0)
-    parser.add_argument("--slippage-expected-bps", type=float, default=0.0)
-    parser.add_argument("--leg-risk-cost", type=float, default=0.0)
-    parser.add_argument("--sqlite-file", default="logs/arb_runtime.sqlite")
-    parser.add_argument("--jsonl-log-file", default="logs/arb_events.jsonl")
-    parser.add_argument("--kalshi-api-key-id", default="")
-    parser.add_argument("--kalshi-private-key-path", default="")
-    return parser.parse_args(argv)
+warnings.warn("DEPRECATED: use scripts/crypto_cli.py", UserWarning, stacklevel=2)
 
 
-def _safe_cfg_view(cfg) -> dict:
-    return {
-        "execution_mode": cfg.execution_mode,
-        "enable_live_prod": cfg.enable_live_prod,
-        "min_edge_pct": cfg.min_edge_pct,
-        "min_liquidity": cfg.min_liquidity,
-        "payout_esperado": cfg.payout_esperado,
-        "slippage_expected_bps": cfg.slippage_expected_bps,
-        "leg_risk_cost": cfg.leg_risk_cost,
-        "sqlite_path": cfg.sqlite_path,
-        "jsonl_path": cfg.jsonl_path,
-        "has_kalshi_api_key_id": bool(cfg.kalshi_api_key_id),
-        "has_kalshi_private_key_path": bool(cfg.kalshi_private_key_path),
-        "has_poly_private_key": bool(cfg.poly_private_key),
-        "has_poly_api_key": bool(cfg.poly_api_key),
-        "has_poly_api_secret": bool(cfg.poly_api_secret),
-        "has_poly_api_passphrase": bool(cfg.poly_api_passphrase),
-    }
+def parse_args(argv: Optional[list[str]] = None):
+    return _parse_args(argv)
 
 
-def validate_from_namespace(args: argparse.Namespace):
-    cfg = build_runtime_config(args)
-    errors = validate_startup(cfg)
-    return cfg, errors
+def validate_from_namespace(args):
+    return _validate_from_namespace(args)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    project_root = Path(__file__).resolve().parents[1]
-    load_env_file(str(project_root / ".env"))
-    args = parse_args(argv)
-    cfg, errors = validate_from_namespace(args)
-
-    view = _safe_cfg_view(cfg)
-    print("arb_cli_config:")
-    for k, v in view.items():
-        print(f"  {k}={v}")
-
-    if errors:
-        print("config_validated=false")
-        for err in errors:
-            print(f"config_error={err}")
-        return 1
-
-    print("config_validated=true")
-    return 0
+    return _crypto_main(argv)
 
 
 if __name__ == "__main__":
