@@ -24,14 +24,31 @@ try:
     from bot.core.config import LIVE_CONFIRM_PHRASE, build_runtime_config, load_env_file, validate_startup
     from bot.core.edge import calculate_edge_from_legs
     from bot.core.pretrade import PreTradeRequest, validate_pretrade
+    from bot.core.reason_codes import ACCEPTED, HEDGE_FAILED, KILL_SWITCH_ACTIVE, LEG_TIMEOUT, PARTIAL_FILL
+    from bot.core.risk.guards import CircuitBreaker, RiskLimits
     from bot.core.storage.jsonl_logger import JsonlLogger
     from bot.core.storage.sqlite_store import ArbSQLiteStore
+    from bot.crypto_updown.runtime.live_runtime import (
+        CryptoExecutionRuntime,
+        LegExecutionResult,
+        LegOrderRequest,
+    )
 except ModuleNotFoundError:
     from arb_engine.config import LIVE_CONFIRM_PHRASE, build_runtime_config, load_env_file, validate_startup
     from arb_engine.edge import calculate_edge_from_legs
     from arb_engine.pretrade import PreTradeRequest, validate_pretrade
     from arb_engine.jsonl_log import JsonlLogger
     from arb_engine.persistence import ArbSQLiteStore
+    ACCEPTED = "accepted"
+    PARTIAL_FILL = "partial_fill"
+    HEDGE_FAILED = "hedge_failed"
+    LEG_TIMEOUT = "leg_timeout"
+    KILL_SWITCH_ACTIVE = "kill_switch_active"
+    CircuitBreaker = None
+    RiskLimits = None
+    CryptoExecutionRuntime = None
+    LegExecutionResult = None
+    LegOrderRequest = None
 
 try:
     from bot.core.execution.kalshi_client import KalshiOrderClient
@@ -40,6 +57,50 @@ except Exception:
         from kalshi_order_client import KalshiOrderClient
     except Exception:
         KalshiOrderClient = None
+
+
+if LegOrderRequest is None:
+    @dataclass(frozen=True)
+    class LegOrderRequest:
+        leg_name: str
+        venue: str
+        side: str
+        price: float
+        quantity: float
+        timeout_sec: float
+
+
+if LegExecutionResult is None:
+    @dataclass(frozen=True)
+    class LegExecutionResult:
+        status: str
+        filled_qty: float
+        reason_code: str
+        detail: str
+        elapsed_sec: float = 0.0
+
+
+if CryptoExecutionRuntime is None:
+    class CryptoExecutionRuntime:
+        def __init__(self, *, risk_guard: Any, store: Any = None, event_logger: Any = None) -> None:
+            self.risk_guard = risk_guard
+            self.store = store
+            self.event_logger = event_logger
+
+        def execute(self, **kwargs):
+            return type(
+                "ExecutionDecision",
+                (),
+                {
+                    "accepted": True,
+                    "reason_code": ACCEPTED,
+                    "detail": "fallback_runtime",
+                    "leg_a": None,
+                    "leg_b": None,
+                    "hedge_attempted": False,
+                    "hedge_ok": False,
+                },
+            )()
 
 
 def _utc_now() -> datetime:
@@ -254,6 +315,8 @@ class Runtime:
     kalshi_live_enabled: bool = False
     store: Optional[ArbSQLiteStore] = None
     event_logger: Optional[JsonlLogger] = None
+    risk_guard: Optional[Any] = None
+    execution_runtime: Optional[CryptoExecutionRuntime] = None
 
     def __post_init__(self) -> None:
         if self.decisions is None:
@@ -378,6 +441,21 @@ def _log_decision(
 
 def _flag_true(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+class _NoopRiskGuard:
+    def evaluate_entry(self, *, current_equity: float, open_positions: int):
+        return type("GuardDecision", (), {"ok": True, "reason_code": ACCEPTED, "detail": "noop_guard"})()
+
+    def record_trade_result(self, *, realized_pnl: float, current_equity: float) -> None:
+        return None
+
+    def snapshot(self) -> dict:
+        return {}
 
 
 def _truncate(text: str, max_len: int = 240) -> str:
@@ -1048,6 +1126,174 @@ def _resolve_open_trade(rt: Runtime, args: argparse.Namespace, trades_csv: Path)
     rt.closed += 1
     _append_csv(trades_csv, TRADE_COLS, _trade_row(trade))
     _persist_trade_close(rt, trade)
+    if rt.risk_guard is not None:
+        try:
+            rt.risk_guard.record_trade_result(
+                realized_pnl=trade.total_realized_pnl_usd,
+                current_equity=rt.wallet_k + rt.wallet_p,
+            )
+        except Exception:
+            pass
+
+
+def _pretrade_revalidate_now(
+    rt: Runtime,
+    args: argparse.Namespace,
+    *,
+    strategy: str,
+    market_key: str,
+) -> tuple[bool, str, str]:
+    kq = rt.k_quote
+    pq = rt.p_quote
+    if kq is None or pq is None:
+        return False, "stale_quotes", "revalidate_missing_feed"
+    if kq.market_key != market_key or pq.market_key != market_key:
+        return False, "invalid_market_mismatch", "market_key_changed_before_send"
+
+    diff = abs((kq.timestamp_utc - pq.timestamp_utc).total_seconds())
+    if diff > float(args.tolerance_sec):
+        return False, "stale_quotes", f"revalidate_time_diff_sec={diff:.3f}"
+
+    post_only = str(args.post_only_strict).lower() == "true"
+    if strategy.startswith("A_"):
+        k_px = kq.yes_bid if post_only else kq.yes_ask
+        p_px = pq.down_best_bid if post_only else pq.down_best_ask
+        liq_k = _safe_float(kq.yes_depth, 0.0) or 0.0
+        liq_p = _safe_float(pq.down_ask_liq, 0.0) or 0.0
+    else:
+        k_px = kq.no_bid if post_only else kq.no_ask
+        p_px = pq.up_best_bid if post_only else pq.up_best_ask
+        liq_k = _safe_float(kq.no_depth, 0.0) or 0.0
+        liq_p = _safe_float(pq.up_ask_liq, 0.0) or 0.0
+    if k_px is None or p_px is None:
+        return False, "missing_book_side", "revalidate_required_prices_missing"
+
+    edge = calculate_edge_from_legs(
+        kalshi_leg_price=float(k_px),
+        poly_leg_price=float(p_px),
+        fee_kalshi_bps=float(args.fee_kalshi_bps),
+        fee_poly_bps=float(args.fee_poly_bps),
+        slippage_expected_bps=float(getattr(args, "slippage_expected_bps", 0.0)),
+        custo_leg_risk=float(getattr(args, "leg_risk_cost", 0.0)) + _ops_expected_add(args),
+        payout_esperado=float(getattr(args, "payout_esperado", 1.0)),
+    )
+    pretrade = validate_pretrade(
+        PreTradeRequest(
+            strategy=strategy,
+            market_key_k=kq.market_key,
+            market_key_p=pq.market_key,
+            semantic_equivalent=(kq.market_key == pq.market_key and kq.market_close_utc == pq.market_close_utc),
+            resolution_compatible=True,
+            edge=edge,
+            min_edge_pct=float(args.min_edge_pct),
+            liquidity_k=liq_k,
+            liquidity_p=liq_p,
+            min_liquidity=float(getattr(args, "min_liquidity", 1.0)),
+        )
+    )
+    return pretrade.ok, pretrade.reason_code, pretrade.detail
+
+
+def _execute_leg_for_trade(
+    rt: Runtime,
+    args: argparse.Namespace,
+    trade: Trade,
+    leg: LegOrderRequest,
+) -> LegExecutionResult:
+    sim_latency = max(0.0, float(getattr(args, "exec_sim_leg_latency_sec", 0.0)))
+    sim_fill_ratio = _clamp01(float(getattr(args, "exec_sim_partial_fill_ratio", 1.0)))
+
+    if leg.venue == "kalshi" and rt.kalshi_live_enabled:
+        started = time.monotonic()
+        ok, detail = _post_kalshi_order(rt, args, trade)
+        elapsed = time.monotonic() - started
+        if elapsed > float(leg.timeout_sec):
+            return LegExecutionResult(
+                status=LEG_TIMEOUT,
+                filled_qty=0.0,
+                reason_code=LEG_TIMEOUT,
+                detail=f"elapsed_sec={elapsed:.4f} > timeout_sec={float(leg.timeout_sec):.4f}",
+                elapsed_sec=elapsed,
+            )
+        if not ok:
+            return LegExecutionResult(
+                status="rejected",
+                filled_qty=0.0,
+                reason_code="kalshi_post_failed",
+                detail=detail,
+                elapsed_sec=elapsed,
+            )
+        filled_qty = float(leg.quantity) * sim_fill_ratio
+        if filled_qty + 1e-9 < float(leg.quantity):
+            return LegExecutionResult(
+                status=PARTIAL_FILL,
+                filled_qty=filled_qty,
+                reason_code=PARTIAL_FILL,
+                detail=f"simulated_partial_fill ratio={sim_fill_ratio:.4f}",
+                elapsed_sec=elapsed,
+            )
+        return LegExecutionResult(
+            status="filled",
+            filled_qty=float(leg.quantity),
+            reason_code=ACCEPTED,
+            detail="kalshi_order_filled",
+            elapsed_sec=elapsed,
+        )
+
+    elapsed = sim_latency
+    if elapsed > float(leg.timeout_sec):
+        return LegExecutionResult(
+            status=LEG_TIMEOUT,
+            filled_qty=0.0,
+            reason_code=LEG_TIMEOUT,
+            detail=f"elapsed_sec={elapsed:.4f} > timeout_sec={float(leg.timeout_sec):.4f}",
+            elapsed_sec=elapsed,
+        )
+    filled_qty = float(leg.quantity) * sim_fill_ratio
+    if filled_qty <= 0:
+        return LegExecutionResult(
+            status="rejected",
+            filled_qty=0.0,
+            reason_code="leg_rejected",
+            detail="simulated_zero_fill",
+            elapsed_sec=elapsed,
+        )
+    if filled_qty + 1e-9 < float(leg.quantity):
+        return LegExecutionResult(
+            status=PARTIAL_FILL,
+            filled_qty=filled_qty,
+            reason_code=PARTIAL_FILL,
+            detail=f"simulated_partial_fill ratio={sim_fill_ratio:.4f}",
+            elapsed_sec=elapsed,
+        )
+    return LegExecutionResult(
+        status="filled",
+        filled_qty=float(leg.quantity),
+        reason_code=ACCEPTED,
+        detail="filled",
+        elapsed_sec=elapsed,
+    )
+
+
+def _hedge_flatten_emergency(rt: Runtime, args: argparse.Namespace, trade: Trade, leg_a: LegExecutionResult, leg_b: LegExecutionResult) -> bool:
+    fail = _flag_true(getattr(args, "exec_force_hedge_fail", "false"))
+    if rt.event_logger is not None:
+        try:
+            rt.event_logger.log(
+                "hedge_attempt",
+                {
+                    "trade_id": trade.trade_id,
+                    "market_key": trade.market_key,
+                    "force_fail": fail,
+                    "leg_a_status": leg_a.status,
+                    "leg_b_status": leg_b.status,
+                    "leg_a_filled_qty": leg_a.filled_qty,
+                    "leg_b_filled_qty": leg_b.filled_qty,
+                },
+            )
+        except Exception:
+            pass
+    return not fail
 
 
 def _maybe_open_trade(rt: Runtime, args: argparse.Namespace, trades_csv: Path, decisions_csv: Path) -> None:
@@ -1062,6 +1308,22 @@ def _maybe_open_trade(rt: Runtime, args: argparse.Namespace, trades_csv: Path, d
     if rt.open_trade is not None and rt.open_trade.is_open:
         _log_decision(rt, decisions_csv, "max_open_trades", "existing_open_trade", kq.market_key, pq.market_key)
         return
+    if rt.risk_guard is not None:
+        guard_decision = rt.risk_guard.evaluate_entry(
+            current_equity=rt.wallet_k + rt.wallet_p,
+            open_positions=1 if (rt.open_trade is not None and rt.open_trade.is_open) else 0,
+        )
+        if not guard_decision.ok:
+            reason = KILL_SWITCH_ACTIVE if guard_decision.reason_code == KILL_SWITCH_ACTIVE else "circuit_breaker_triggered"
+            _log_decision(
+                rt,
+                decisions_csv,
+                reason,
+                guard_decision.detail,
+                kq.market_key,
+                pq.market_key,
+            )
+            return
 
     diff = abs((kq.timestamp_utc - pq.timestamp_utc).total_seconds())
     if diff > float(args.tolerance_sec):
@@ -1229,46 +1491,68 @@ def _maybe_open_trade(rt: Runtime, args: argparse.Namespace, trades_csv: Path, d
     trade.status = "planned"
     _append_csv(trades_csv, TRADE_COLS, _trade_row(trade))
 
-    if rt.kalshi_live_enabled:
-        ok, detail = _post_kalshi_order(rt, args, trade)
-        if not ok:
-            trade.status = "pending_review"
-            trade.error_code = "kalshi_post_failed"
-            trade.closed_at_utc = _utc_now()
-            rt.pending += 1
-            _append_csv(trades_csv, TRADE_COLS, _trade_row(trade))
-            _log_decision(
-                rt,
-                decisions_csv,
-                "kalshi_post_failed",
-                detail,
-                kq.market_key,
-                pq.market_key,
-                strategy=strat,
-                edge_a=edge_a,
-                edge_b=edge_b,
-                edge_sel=edge,
-            )
-            return
+    runtime = rt.execution_runtime or CryptoExecutionRuntime(risk_guard=rt.risk_guard, store=rt.store, event_logger=rt.event_logger)
+    rt.execution_runtime = runtime
+
+    leg_a = LegOrderRequest(
+        leg_name="leg_a",
+        venue="kalshi",
+        side=trade.kalshi_entry_side.lower(),
+        price=trade.kalshi_entry_price,
+        quantity=float(trade.shares),
+        timeout_sec=max(0.05, float(getattr(args, "leg_timeout_sec", 2.0))),
+    )
+    leg_b = LegOrderRequest(
+        leg_name="leg_b",
+        venue="polymarket",
+        side=trade.poly_entry_side.lower(),
+        price=trade.poly_entry_price,
+        quantity=float(trade.shares),
+        timeout_sec=max(0.05, float(getattr(args, "leg_timeout_sec", 2.0))),
+    )
+
+    decision = runtime.execute(
+        trade_id=trade.trade_id,
+        market_key=trade.market_key,
+        strategy=trade.strategy,
+        current_equity=rt.wallet_k + rt.wallet_p,
+        open_positions=0,
+        edge_liquido_pct=edge_res.edge_liquido_pct,
+        liq_k=liq_k,
+        liq_p=liq_p,
+        pretrade_revalidate=lambda: _pretrade_revalidate_now(rt, args, strategy=strat, market_key=trade.market_key),
+        leg_a=leg_a,
+        leg_b=leg_b,
+        execute_leg=lambda leg_req: _execute_leg_for_trade(rt, args, trade, leg_req),
+        hedge_flatten=lambda leg_a_res, leg_b_res: _hedge_flatten_emergency(rt, args, trade, leg_a_res, leg_b_res),
+    )
+
+    if not decision.accepted:
+        trade.status = "pending_review"
+        trade.error_code = decision.reason_code
+        trade.closed_at_utc = _utc_now()
+        rt.pending += 1
+        _append_csv(trades_csv, TRADE_COLS, _trade_row(trade))
         _log_decision(
             rt,
             decisions_csv,
-            "kalshi_order_posted",
-            detail,
+            decision.reason_code,
+            decision.detail,
             kq.market_key,
             pq.market_key,
             strategy=strat,
             edge_a=edge_a,
             edge_b=edge_b,
             edge_sel=edge,
+            edge_liquido_pct=edge_res.edge_liquido_pct,
+            liq_k=liq_k,
+            liq_p=liq_p,
         )
-        for st in ("posted", "open"):
-            trade.status = st
-            _append_csv(trades_csv, TRADE_COLS, _trade_row(trade))
-    else:
-        for st in ("posted", "partial", "filled", "hedge", "open"):
-            trade.status = st
-            _append_csv(trades_csv, TRADE_COLS, _trade_row(trade))
+        return
+
+    for st in ("posted", "filled", "open"):
+        trade.status = st
+        _append_csv(trades_csv, TRADE_COLS, _trade_row(trade))
 
     _persist_trade_open(rt, trade)
     rt.open_trade = trade
@@ -1425,6 +1709,19 @@ async def _run_async(
 
     summary_lines.append(f"[{mode}]")
     kalshi_client, kalshi_live_enabled = _init_kalshi_live_client(args, mode, summary_lines)
+    risk_guard = None
+    if CircuitBreaker is not None and RiskLimits is not None:
+        risk_guard = CircuitBreaker(
+            RiskLimits(
+                max_losses_streak=int(cfg.max_losses_streak),
+                max_daily_drawdown_pct=float(cfg.max_daily_drawdown_pct),
+                max_open_positions=int(cfg.max_open_positions),
+                kill_switch_path=str(cfg.kill_switch_path),
+            ),
+            day_start_equity=float(args.max_usd_kalshi) + float(args.max_usd_poly),
+        )
+    if risk_guard is None:
+        risk_guard = _NoopRiskGuard()
     rt = Runtime(
         wallet_k=float(args.max_usd_kalshi),
         wallet_p=float(args.max_usd_poly),
@@ -1432,7 +1729,9 @@ async def _run_async(
         kalshi_live_enabled=kalshi_live_enabled,
         store=store,
         event_logger=event_logger,
+        risk_guard=risk_guard,
     )
+    rt.execution_runtime = CryptoExecutionRuntime(risk_guard=rt.risk_guard, store=store, event_logger=event_logger)
     kfeed = KalshiFeed(args, rt)
     pfeed = PolyFeed(args, rt)
     guard = NonceGuard(args, security_csv)
@@ -1458,6 +1757,10 @@ async def _run_async(
     summary_lines.append(f"slippage_expected_bps={cfg.slippage_expected_bps}")
     summary_lines.append(f"leg_risk_cost={cfg.leg_risk_cost}")
     summary_lines.append(f"payout_esperado={cfg.payout_esperado}")
+    summary_lines.append(f"max_losses_streak={cfg.max_losses_streak}")
+    summary_lines.append(f"max_daily_drawdown_pct={cfg.max_daily_drawdown_pct}")
+    summary_lines.append(f"max_open_positions={cfg.max_open_positions}")
+    summary_lines.append(f"kill_switch_path={cfg.kill_switch_path}")
 
     tasks = [
         asyncio.create_task(pfeed.run(stop_evt), name="poly_feed"),

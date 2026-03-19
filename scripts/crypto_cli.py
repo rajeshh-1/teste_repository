@@ -26,6 +26,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--jsonl-log-file", default="logs/arb_events.jsonl")
     parser.add_argument("--kalshi-api-key-id", default="")
     parser.add_argument("--kalshi-private-key-path", default="")
+    parser.add_argument("--max-losses-streak", type=int, default=3)
+    parser.add_argument("--max-daily-drawdown-pct", type=float, default=20.0)
+    parser.add_argument("--max-open-positions", type=int, default=1)
+    parser.add_argument("--kill-switch-path", default="logs/kill_switch.flag")
     return parser.parse_args(argv)
 
 
@@ -47,6 +51,10 @@ def _safe_cfg_view(cfg) -> dict:
         "has_poly_api_key": bool(cfg.poly_api_key),
         "has_poly_api_secret": bool(cfg.poly_api_secret),
         "has_poly_api_passphrase": bool(cfg.poly_api_passphrase),
+        "max_losses_streak": cfg.max_losses_streak,
+        "max_daily_drawdown_pct": cfg.max_daily_drawdown_pct,
+        "max_open_positions": cfg.max_open_positions,
+        "kill_switch_path": cfg.kill_switch_path,
     }
 
 

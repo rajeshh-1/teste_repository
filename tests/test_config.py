@@ -18,6 +18,10 @@ def _args(**overrides):
         jsonl_log_file="logs/arb_events.jsonl",
         kalshi_api_key_id="",
         kalshi_private_key_path="",
+        max_losses_streak=3,
+        max_daily_drawdown_pct=20.0,
+        max_open_positions=1,
+        kill_switch_path="logs/kill_switch.flag",
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -81,6 +85,9 @@ def test_validate_startup_rejects_invalid_numeric_values():
             slippage_expected_bps=-1.0,
             leg_risk_cost=-1.0,
             payout_esperado=0.0,
+            max_losses_streak=0,
+            max_daily_drawdown_pct=0.0,
+            max_open_positions=0,
         )
     )
     errors = validate_startup(cfg)
@@ -90,6 +97,9 @@ def test_validate_startup_rejects_invalid_numeric_values():
     assert "slippage_expected_bps must be >= 0" in errors
     assert "leg_risk_cost must be >= 0" in errors
     assert "payout_esperado must be > 0" in errors
+    assert "max_losses_streak must be >= 1" in errors
+    assert "max_daily_drawdown_pct must be > 0" in errors
+    assert "max_open_positions must be >= 1" in errors
 
 
 def test_load_env_file_parses_lines_and_overwrite(tmp_path, monkeypatch):

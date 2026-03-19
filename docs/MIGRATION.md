@@ -33,7 +33,7 @@ All of them still work, but may print warnings:
 - `logs/kalshi_order_client.py` -> `bot/core/execution/kalshi_client.py`
 
 ## Planned next step
-In Phase 3, tests and smoke tests will be standardized around the new entrypoint and legacy wrappers.
+Phase 4.x focuses on domain split hardening and safer runtime execution guards.
 
 ## Quality gate commands (Phase 3)
 - `make compile`

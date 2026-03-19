@@ -48,6 +48,10 @@ class RuntimeConfig:
     poly_api_key: str
     poly_api_secret: str
     poly_api_passphrase: str
+    max_losses_streak: int
+    max_daily_drawdown_pct: float
+    max_open_positions: int
+    kill_switch_path: str
 
 
 def build_runtime_config(args) -> RuntimeConfig:
@@ -68,6 +72,12 @@ def build_runtime_config(args) -> RuntimeConfig:
         poly_api_key=_env_or(None, "POLY_API_KEY"),
         poly_api_secret=_env_or(None, "POLY_API_SECRET"),
         poly_api_passphrase=_env_or(None, "POLY_API_PASSPHRASE"),
+        max_losses_streak=int(getattr(args, "max_losses_streak", 3)),
+        max_daily_drawdown_pct=float(getattr(args, "max_daily_drawdown_pct", 20.0)),
+        max_open_positions=int(getattr(args, "max_open_positions", 1)),
+        kill_switch_path=str(
+            getattr(args, "kill_switch_path", _env_or(None, "ARB_KILL_SWITCH_PATH", "logs/kill_switch.flag"))
+        ),
     )
 
 
@@ -85,6 +95,12 @@ def validate_startup(cfg: RuntimeConfig) -> list[str]:
         errors.append("leg_risk_cost must be >= 0")
     if cfg.payout_esperado <= 0:
         errors.append("payout_esperado must be > 0")
+    if cfg.max_losses_streak < 1:
+        errors.append("max_losses_streak must be >= 1")
+    if cfg.max_daily_drawdown_pct <= 0:
+        errors.append("max_daily_drawdown_pct must be > 0")
+    if cfg.max_open_positions < 1:
+        errors.append("max_open_positions must be >= 1")
 
     if cfg.execution_mode == "live":
         if not cfg.enable_live_prod:
@@ -99,4 +115,3 @@ def validate_startup(cfg: RuntimeConfig) -> list[str]:
         if not cfg.poly_private_key:
             errors.append("missing POLY_PRIVATE_KEY for live mode")
     return errors
-
