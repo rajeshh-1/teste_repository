@@ -62,6 +62,10 @@ class Decision:
     accepted: bool
     reason_code: str
     detail: str
+    predicted_edge_pct: float = 0.0
+    captured_edge_pct: float = 0.0
+    pnl_usd: float = 0.0
+    fill_full: bool = False
 
     def __post_init__(self) -> None:
         if self.reason_code not in VALID_REASON_CODES:
@@ -78,75 +82,117 @@ class PolicySimulationResult:
         return sum(1 for d in self.decisions if d.reason_code == ACCEPTED)
 
 
+def _build_decision(
+    *,
+    policy: PolicyConfig,
+    event: SyntheticEvent,
+    event_index: int,
+    reason_code: str,
+    detail: str,
+    accepted: bool,
+) -> Decision:
+    predicted_edge_pct = max(0.0, float(event.edge_liq_pct))
+    timeout_utilization = float(event.leg2_latency_ms) / max(1.0, float(policy.leg2_timeout_ms))
+    latency_penalty_pct = min(1.5, timeout_utilization * 0.35)
+    expected_failure_penalty_pct = (float(event.timeout_prob) * 1.2) + (float(event.partial_fill_prob) * 0.6)
+    if reason_code == ACCEPTED:
+        captured_edge_pct = max(-5.0, predicted_edge_pct - latency_penalty_pct - expected_failure_penalty_pct)
+    elif reason_code == BELOW_MIN_EDGE:
+        captured_edge_pct = 0.0
+    elif reason_code == LEG_TIMEOUT:
+        captured_edge_pct = -max(0.2, min(2.0, (predicted_edge_pct * 0.2) + (float(event.timeout_prob) * 3.0)))
+    elif reason_code == PARTIAL_FILL:
+        captured_edge_pct = -((float(event.unwind_loss_bps) / 100.0) + 0.15)
+    elif reason_code == HEDGE_FAILED:
+        captured_edge_pct = -((float(event.unwind_loss_bps) / 100.0) + 0.75)
+    elif reason_code == UNWIND_EXECUTED:
+        captured_edge_pct = -(float(event.unwind_loss_bps) / 100.0)
+    else:
+        captured_edge_pct = 0.0
+    pnl_usd = round((captured_edge_pct / 100.0) * 10.0, 8)
+    return Decision(
+        policy_id=policy.policy_id,
+        event_index=event_index,
+        market_key=event.market_key,
+        accepted=bool(accepted),
+        reason_code=reason_code,
+        detail=detail,
+        predicted_edge_pct=round(predicted_edge_pct, 8),
+        captured_edge_pct=round(captured_edge_pct, 8),
+        pnl_usd=pnl_usd,
+        fill_full=(reason_code == ACCEPTED and accepted),
+    )
+
+
 def _evaluate_event(policy: PolicyConfig, event: SyntheticEvent, event_index: int, rng: random.Random) -> Decision:
     if event.seconds_to_close < int(policy.entry_cutoff_sec):
-        return Decision(
-            policy_id=policy.policy_id,
+        return _build_decision(
+            policy=policy,
+            event=event,
             event_index=event_index,
-            market_key=event.market_key,
-            accepted=False,
             reason_code=BELOW_MIN_EDGE,
             detail=f"entry_cutoff_sec violated: {event.seconds_to_close} < {policy.entry_cutoff_sec}",
+            accepted=False,
         )
 
     if float(event.edge_liq_pct) < float(policy.min_edge_liq_pct):
-        return Decision(
-            policy_id=policy.policy_id,
+        return _build_decision(
+            policy=policy,
+            event=event,
             event_index=event_index,
-            market_key=event.market_key,
-            accepted=False,
             reason_code=BELOW_MIN_EDGE,
             detail=f"edge_liq_pct {event.edge_liq_pct:.6f} < min_edge_liq_pct {policy.min_edge_liq_pct:.6f}",
+            accepted=False,
         )
 
     if int(event.leg2_latency_ms) > int(policy.leg2_timeout_ms) or rng.random() < float(event.timeout_prob):
-        return Decision(
-            policy_id=policy.policy_id,
+        return _build_decision(
+            policy=policy,
+            event=event,
             event_index=event_index,
-            market_key=event.market_key,
-            accepted=False,
             reason_code=LEG_TIMEOUT,
             detail=f"leg2 latency/timeout failure (latency={event.leg2_latency_ms}ms, timeout_prob={event.timeout_prob:.4f})",
+            accepted=False,
         )
 
     if rng.random() < float(event.partial_fill_prob):
         if float(event.unwind_loss_bps) > float(policy.max_unwind_loss_bps):
-            return Decision(
-                policy_id=policy.policy_id,
+            return _build_decision(
+                policy=policy,
+                event=event,
                 event_index=event_index,
-                market_key=event.market_key,
-                accepted=False,
                 reason_code=PARTIAL_FILL,
                 detail=(
                     f"partial fill and unwind blocked: unwind_loss_bps {event.unwind_loss_bps:.4f} > "
                     f"max_unwind_loss_bps {policy.max_unwind_loss_bps:.4f}"
                 ),
+                accepted=False,
             )
         if rng.random() < float(event.hedge_fail_prob):
-            return Decision(
-                policy_id=policy.policy_id,
+            return _build_decision(
+                policy=policy,
+                event=event,
                 event_index=event_index,
-                market_key=event.market_key,
-                accepted=False,
                 reason_code=HEDGE_FAILED,
                 detail=f"partial fill with hedge failure (hedge_fail_prob={event.hedge_fail_prob:.4f})",
+                accepted=False,
             )
-        return Decision(
-            policy_id=policy.policy_id,
+        return _build_decision(
+            policy=policy,
+            event=event,
             event_index=event_index,
-            market_key=event.market_key,
-            accepted=False,
             reason_code=UNWIND_EXECUTED,
             detail=f"partial fill handled by unwind (loss_bps={event.unwind_loss_bps:.4f})",
+            accepted=False,
         )
 
-    return Decision(
-        policy_id=policy.policy_id,
+    return _build_decision(
+        policy=policy,
+        event=event,
         event_index=event_index,
-        market_key=event.market_key,
-        accepted=True,
         reason_code=ACCEPTED,
         detail="trade accepted",
+        accepted=True,
     )
 
 

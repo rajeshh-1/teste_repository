@@ -73,4 +73,32 @@ No `--out-dir`:
 - `profile_results.json`
 - `summary.md`
 
-`summary.md` inclui top 5 policies por `robustness_score`.
+## Metricas calculadas por policy
+- `trades_attempted`, `trades_accepted`
+- `fill_full_rate`, `partial_fill_rate`, `timeout_rate`, `hedge_failed_rate`
+- `unwind_count`
+- `avg_edge_predicted_pct`, `avg_edge_captured_pct`, `edge_capture_ratio`
+- `pnl_total`, `pnl_per_trade`
+- `max_drawdown_pct`
+- `p95_loss`, `p99_loss`
+- `skip_rate`
+- `robustness_score`
+
+## Regras go/no-go
+Uma policy e marcada como `go` somente se:
+- `hedge_failed_rate <= 1.5%`
+- `pnl_per_trade > 0`
+- `max_drawdown_pct <= 12.0`
+- `p99_loss <= 0.40`
+
+Caso contrario, `go_no_go = no_go` com bloqueadores em `go_blockers`.
+
+## Conteudo do summary
+`summary.md` inclui:
+- top 10 policies por robustez (tabela)
+- top perfis e perfis perigosos
+- zona segura sugerida
+- recomendacao final automatica:
+  - `conservador`
+  - `moderado`
+  - `agressivo`
