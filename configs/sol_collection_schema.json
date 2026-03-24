@@ -1,0 +1,168 @@
+{
+  "version": "1.0",
+  "timezone": "UTC",
+  "markets": [
+    "SOL5M",
+    "SOL15M"
+  ],
+  "file_patterns": {
+    "trades": "trades_YYYY-MM-DD.jsonl",
+    "prices": "prices_YYYY-MM-DD.jsonl",
+    "orderbook": "orderbook_YYYY-MM-DD.jsonl",
+    "metadata": "metadata_YYYY-MM-DD.json"
+  },
+  "datasets": {
+    "trades": {
+      "format": "jsonl",
+      "required_fields": {
+        "timestamp_utc": {
+          "type": "string",
+          "required": true
+        },
+        "market_key": {
+          "type": "string",
+          "required": true
+        },
+        "price": {
+          "type": "number",
+          "required": true,
+          "constraints": {
+            "min": 0,
+            "max": 1
+          }
+        },
+        "size": {
+          "type": "number",
+          "required": true,
+          "constraints": {
+            "min": 0
+          }
+        },
+        "side": {
+          "type": "string",
+          "required": true,
+          "allowed": [
+            "buy",
+            "sell"
+          ]
+        },
+        "trade_id": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "natural_key": [
+        "market_key",
+        "trade_id"
+      ]
+    },
+    "prices": {
+      "format": "jsonl",
+      "required_fields": {
+        "timestamp_utc": {
+          "type": "string",
+          "required": true
+        },
+        "market_key": {
+          "type": "string",
+          "required": true
+        },
+        "best_bid": {
+          "type": "number",
+          "required": true,
+          "constraints": {
+            "min": 0,
+            "max": 1
+          }
+        },
+        "best_ask": {
+          "type": "number",
+          "required": true,
+          "constraints": {
+            "min": 0,
+            "max": 1
+          }
+        },
+        "mid": {
+          "type": "number",
+          "required": true,
+          "constraints": {
+            "min": 0,
+            "max": 1
+          }
+        }
+      },
+      "natural_key": [
+        "market_key",
+        "timestamp_utc"
+      ]
+    },
+    "orderbook": {
+      "format": "jsonl",
+      "required_fields": {
+        "timestamp_utc": {
+          "type": "string",
+          "required": true
+        },
+        "market_key": {
+          "type": "string",
+          "required": true
+        },
+        "bids": {
+          "type": "array",
+          "required": true
+        },
+        "asks": {
+          "type": "array",
+          "required": true
+        },
+        "snapshot_id": {
+          "type": "string",
+          "required": true
+        }
+      },
+      "natural_key": [
+        "market_key",
+        "snapshot_id"
+      ]
+    },
+    "metadata": {
+      "format": "json",
+      "required_fields": {
+        "collection_status": {
+          "type": "string",
+          "required": true
+        },
+        "gaps": {
+          "type": "array",
+          "required": true
+        },
+        "errors": {
+          "type": "array",
+          "required": true
+        },
+        "source": {
+          "type": "string",
+          "required": true
+        },
+        "coverage_start_utc": {
+          "type": "string",
+          "required": true
+        },
+        "coverage_end_utc": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  },
+  "quality_rules": {
+    "prices_range": {
+      "min": 0,
+      "max": 1
+    },
+    "timestamps_must_be_utc": true,
+    "deduplicate_by_natural_key": true,
+    "record_collection_gaps": true
+  }
+}
