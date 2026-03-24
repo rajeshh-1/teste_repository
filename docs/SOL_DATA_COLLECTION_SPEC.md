@@ -59,3 +59,33 @@
 ## Bootstrap Outputs
 - Empty versioned directories with `.gitkeep`.
 - Machine-readable schema in `configs/sol_collection_schema.json`.
+
+## Execution (Step 2)
+CLI:
+
+```bash
+python scripts/fetch_sol_today_history.py --help
+```
+
+Example (today UTC, both markets):
+
+```bash
+python scripts/fetch_sol_today_history.py \
+  --market both \
+  --date YYYY-MM-DD \
+  --out-dir data/raw \
+  --include-orderbook true
+```
+
+Main options:
+- `--market SOL5M|SOL15M|both` (default `both`)
+- `--date YYYY-MM-DD` (default: current UTC date)
+- `--out-dir data/raw`
+- `--include-orderbook true|false`
+- `--page-size`, `--max-pages`, `--sleep-ms`, `--timeout-sec`
+
+Generated files per market:
+- `trades_YYYY-MM-DD.jsonl`
+- `prices_YYYY-MM-DD.jsonl`
+- `orderbook_YYYY-MM-DD.jsonl` (if collected)
+- `metadata_YYYY-MM-DD.json`
