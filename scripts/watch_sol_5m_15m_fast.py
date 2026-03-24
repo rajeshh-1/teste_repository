@@ -553,11 +553,13 @@ def main() -> None:
     parser.add_argument("--raw-dir", default="data/raw", help="Raw output directory for trades/prices/orderbook JSONL.")
     parser.add_argument("--collect-orderbook", choices=["true", "false"], default="true")
     parser.add_argument("--collect-trades", choices=["true", "false"], default="true")
-    parser.add_argument("--book-depth", type=int, default=15, help="Orderbook levels to persist per side.")
+    parser.add_argument("--book-depth", type=int, default=15, help="Orderbook levels to persist per side (0 = all levels).")
     parser.add_argument("--trade-limit", type=int, default=200, help="Recent trades pulled per cycle.")
     args = parser.parse_args()
 
     interval = max(0.05, float(args.interval))
+    if int(args.book_depth) < 0:
+        raise ValueError("--book-depth must be >= 0")
     collect_orderbook = parse_bool(args.collect_orderbook)
     collect_trades = parse_bool(args.collect_trades)
     ensure_csv(args.csv_file, CSV_FIELDS)
@@ -591,7 +593,7 @@ def main() -> None:
                 collect_orderbook=collect_orderbook,
                 collect_trades=collect_trades,
                 trade_limit=max(1, int(args.trade_limit)),
-                book_depth=max(1, int(args.book_depth)),
+                book_depth=int(args.book_depth),
             )
         except Exception as exc:
             print(f"{iso_utc(datetime.now(timezone.utc))} | {args.coin}/5m | error={exc}")
@@ -606,7 +608,7 @@ def main() -> None:
                 collect_orderbook=collect_orderbook,
                 collect_trades=collect_trades,
                 trade_limit=max(1, int(args.trade_limit)),
-                book_depth=max(1, int(args.book_depth)),
+                book_depth=int(args.book_depth),
             )
         except Exception as exc:
             print(f"{iso_utc(datetime.now(timezone.utc))} | {args.coin}/15m | error={exc}")
